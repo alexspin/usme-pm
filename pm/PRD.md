@@ -45,15 +45,13 @@ That is a harder question — and a significantly more valuable one.
 
 ## Success Metrics
 
-| Metric | Baseline | Target | Notes |
+| Metric | Baseline | Target | How measured |
 |---|---|---|---|
-| Context tokens per turn | ~90K (post-distiller) | ≤60K | Tighter selection = smaller context |
-| Context relevance | subjective | Measurably better (A/B eval) | Q: define eval harness |
-| Skills auto-generated / week | 0 | ≥1 usable skill/week | FR-08 working |
-| Stale memory in context | unknown | <5% of items | Memory critic working |
-| Hot path latency | ~0ms (pass-through) | P95 ≤150ms | Local-first path |
-
-*(Success metrics are provisional — see OPEN_QUESTIONS.md Q2)*
+| Skill candidate pass rate | 0 (no distillation) | ≥50% of candidates worth promoting | Human review on each generated candidate |
+| Skills promoted / week | 0 | ≥1 / week once steady-state | Count in skill staging folder |
+| Memory priority audit | N/A | Periodic human review confirms top-N look right | Manual spot-check cadence (TBD) |
+| Context tokens per turn | ~90K (post-distiller) | Measurable reduction vs LCM baseline | Token count logged per turn |
+| Hot path latency | ~0ms (pass-through) | P95 ≤150ms local | Logged at assemble() |
 
 ---
 

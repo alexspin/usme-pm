@@ -32,11 +32,13 @@
 
 ## Current Blockers
 
-- 6 discovery questions still open (see OPEN_QUESTIONS.md) — must be resolved before moving to DESIGN
-- Primary blocker: what is the actual pain driver? (Alex's answer shapes scope significantly)
+None — all 6 discovery questions resolved (2026-04-01). PRD draft exists. Ready to move to DESIGN.
 
 ---
 
 ## Next Action
 
-Answer the open discovery questions in OPEN_QUESTIONS.md, then write and approve PRD.md before moving to DESIGN stage.
+1. Alex reviews and approves PRD.md
+2. Write architecture.md (storage schema, hot path + async path flow)
+3. Run node:sqlite + sqlite-vec smoke test
+4. Move to DESIGN stage

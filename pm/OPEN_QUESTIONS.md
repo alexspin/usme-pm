@@ -5,12 +5,12 @@ When resolved, move to DECISIONS.md and mark `resolved` here.
 
 | # | Question | Owner | Raised | Status |
 |---|---|---|---|---|
-| Q1 | What is the actual pain driver? | Alex | 2026-03-30 | open |
-| Q2 | How do we define and measure success? | Alex + Rufus | 2026-03-30 | open |
-| Q3 | Ship as rufus-plugin or new standalone plugin? | Alex | 2026-04-01 | open |
-| Q4 | Transition strategy — shadow mode first or hard cutover? | Rufus | 2026-04-01 | open |
-| Q5 | Which SQLite vector extension? | Rufus | 2026-04-01 | open |
-| Q6 | Latency budget for hot path packaging? | Alex | 2026-04-01 | open |
+| Q1 | What is the actual pain driver? | Alex | 2026-03-30 | **resolved** |
+| Q2 | How do we define and measure success? | Alex + Rufus | 2026-03-30 | **resolved** |
+| Q3 | Ship as rufus-plugin or new standalone plugin? | Alex | 2026-04-01 | **resolved** |
+| Q4 | Transition strategy — shadow mode first or hard cutover? | Rufus | 2026-04-01 | **resolved** |
+| Q5 | Which SQLite vector extension? | Rufus | 2026-04-01 | **resolved** |
+| Q6 | Latency budget for hot path packaging? | Alex | 2026-04-01 | **resolved** |
 
 ---
 
@@ -97,4 +97,9 @@ FR-07 (online learning hooks) requires feedback signals — this decision define
 
 | # | Question | Answer | Resolved |
 |---|---|---|---|
-| — | — | — | — |
+| Q1 | What is the actual pain driver? | Memory is not prioritized (no relevance-based selection); memory doesn't lead to durable skills (no distillation loop). Maps to FR-03 + FR-08. | 2026-04-01 |
+| Q2 | How do we define and measure success? | (1) Skill generation rate + quality: skills produced as conversations evolve, human reviews and promotes candidates — pass rate = % worth keeping. (2) Memory priority audit: periodic human review of what's prioritized — "does this look right?" (3) Context window savings: token count per turn vs LCM baseline. | 2026-04-01 |
+| Q3 | Ship as rufus-plugin or new standalone plugin? | Ports and adapters: `usme-core` is a pure TS package (zero OpenClaw imports); OpenClaw adapter is a thin wrapper in rufus-plugin. Core is framework-agnostic and reusable. See ADR-006. | 2026-04-01 |
+| Q4 | Transition strategy — shadow mode first or hard cutover? | Shadow mode first: USME runs in parallel with LCM, logs what it would have sent vs what LCM sends. Hard cutover only after shadow evaluation confirms quality. See ADR-007. | 2026-04-01 |
+| Q5 | Which SQLite vector extension? | `sqlite-vec` + Node.js built-in `node:sqlite`. Pure C (no native build), Node v25 `node:sqlite` has `loadExtension()`, zero new service deps, fastest possible in-process path. LanceDB rejected: Rust native binary, async overhead, overkill for single-user. See ADR-008. | 2026-04-01 |
+| Q6 | Latency budget for hot path packaging? | Replace LCM without dramatic latency increase. Build for performance from the start — use synchronous in-process path (node:sqlite), no IPC, no remote calls in hot path. Fast refiner (Flash/Haiku) deferred to v2. No hard ms ceiling set; measure baseline first, then optimize. | 2026-04-01 |

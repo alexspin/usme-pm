@@ -4,6 +4,88 @@ Key decisions logged in ADR style.
 
 ---
 
+## ADR-006: Ports and adapters — usme-core library + openclaw adapter
+
+**Date:** 2026-04-01
+**Status:** accepted
+**Decided by:** Alex
+
+**Context:**
+USME needs to live in rufus-plugin (primary home) but also be usable in other agent frameworks (LangChain, CrewAI, custom harnesses). These are in tension if the core logic knows about OpenClaw.
+
+**Options considered:**
+1. Build directly as an OpenClaw plugin — simple, but locked in; can't be reused elsewhere
+2. Build as a standalone package only — more portable, but disconnected from rufus-plugin
+3. Ports and adapters: framework-agnostic core + thin OpenClaw adapter wrapper
+
+**Decision:**
+Option 3. Two layers with a hard boundary:
+- **`usme-core`**: pure TypeScript npm package, zero OpenClaw imports. Owns storage, selection policy, memory critic, consolidation, skill distillation. Public interface: `ingest()`, `assemble()`, `consolidate()`, `distillSkills()`. Lives at `rufus-projects/usme/`.
+- **OpenClaw adapter**: thin wrapper (~100 lines) inside rufus-plugin. Implements OpenClaw's Context Engine contract, maps turn format → MemoryItem, registers via `plugins.slots.contextEngine`.
+
+Future adapters (LangChain, CrewAI, etc.) implement their own interface on top of `usme-core`.
+
+**The rule:** nothing in `usme-core` imports from openclaw. The adapter knows both; the core knows neither.
+
+**Consequences:**
+- Core and adapter can be built in parallel once the interface is locked
+- `usme-core` is publishable to npm independently if/when that's useful
+- Interface contract must be defined and locked before adapter work begins
+
+---
+
+## ADR-008: Storage — sqlite-vec + node:sqlite built-in (Node v25)
+
+**Date:** 2026-04-01
+**Status:** accepted
+**Decided by:** Rufus (research) — confirmed by Q5/Q6 constraints
+
+**Context:**
+ADR-003 selected SQLite + vector extension. Need to pick the specific extension and binding.
+
+**Options considered:**
+1. `better-sqlite3` + `sqlite-vec` — synchronous, fast, but native build issues on this box (documented in TOOLS.md)
+2. `node:sqlite` (built-in Node v25) + `sqlite-vec` — synchronous, built-in, no native compilation, `loadExtension()` supported
+3. LanceDB (`@lancedb/lancedb`) — embedded, Rust-based native binary per platform, async API, larger scope
+
+**Decision:**
+`node:sqlite` (built-in) + `sqlite-vec` npm package.
+- Node v25.8.1 (our runtime) ships `node:sqlite` with `loadExtension()` support
+- `sqlite-vec` is pure C — loads cleanly, no compilation step, no platform issues
+- Synchronous in-process path = lowest possible hot path latency (no async overhead, no IPC)
+- LanceDB rejected: Rust native binary has platform load risks (documented Windows issue), async API adds latency, billion-scale features are overkill for single-user
+
+**Consequences:**
+- Zero new native dependencies — no node-gyp, no better-sqlite3
+- Must validate `node:sqlite` + `sqlite-vec` integration in a prototype before starting schema design
+- HNSW index via sqlite-vec for ANN search; flat scan acceptable for small corpora (<10K memories)
+
+---
+
+## ADR-007: Transition — shadow mode first, hard cutover after validation
+
+**Date:** 2026-04-01
+**Status:** accepted
+**Decided by:** Alex
+
+**Context:**
+LCM (lossless-claw) is working in production today. USME replaces it. Need a safe cutover strategy.
+
+**Options considered:**
+1. Hard cutover — disable LCM, enable USME, monitor
+2. Shadow mode — USME runs in parallel, logs what it *would have* sent, compare vs LCM before enabling
+3. Gradual — USME for new sessions, LCM for existing
+
+**Decision:**
+Shadow mode first (Option 2). USME runs alongside LCM, assembles context each turn but does not send it to the model — logs output to JSONL for comparison. Hard cutover only after shadow evaluation confirms USME quality ≥ LCM.
+
+**Consequences:**
+- Must build a shadow mode flag into the OpenClaw adapter from day one
+- Evaluation log format needed: per-turn JSONL with {turn_id, lcm_tokens, usme_tokens, usme_top_items, timestamp}
+- Shadow mode is also the natural A/B harness for measuring token savings (Q2 success metric)
+
+---
+
 ## ADR-001: Integration point is the contextEngine slot — USME replaces lossless-claw
 
 **Date:** 2026-03-30
