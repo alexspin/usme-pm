@@ -4,108 +4,180 @@ Key decisions logged in ADR style.
 
 ---
 
-## ADR-006: Ports and adapters — usme-core library + openclaw adapter
+## ADR-009: Storage — Postgres + TimescaleDB + pgvector + pgvectorscale (supersedes ADR-003 and ADR-008)
 
-**Date:** 2026-04-01
+**Date:** 2026-04-04
 **Status:** accepted
 **Decided by:** Alex
 
 **Context:**
-USME needs to live in rufus-plugin (primary home) but also be usable in other agent frameworks (LangChain, CrewAI, custom harnesses). These are in tension if the core logic knows about OpenClaw.
+ADR-003 (SQLite + sqlite-vec) was chosen for ops simplicity. The scope has since expanded to include: embedding-based clustering for nightly consolidation, hybrid vector + full-text search, fast-model (Haiku/Flash) per-turn extraction writing to the same store, and Sonnet/Opus nightly skill accrual. These requirements strain SQLite significantly — clustering is absent, hybrid search requires app-layer re-ranking, and HNSW indexing is unavailable.
 
 **Options considered:**
-1. Build directly as an OpenClaw plugin — simple, but locked in; can't be reused elsewhere
-2. Build as a standalone package only — more portable, but disconnected from rufus-plugin
-3. Ports and adapters: framework-agnostic core + thin OpenClaw adapter wrapper
+1. SQLite + sqlite-vec (prior decision) — in-process, zero ops, insufficient for clustering + hybrid search
+2. Postgres + pgvector — strong vector support, hybrid search via tsvector, HNSW indexing, ACID guarantees
+3. Postgres + TimescaleDB + pgvector + pgvectorscale — adds time-series hypertables (auto-partitioned episodic store), DiskANN indexes via pgvectorscale (28x lower p95 latency than Pinecone at scale, 75% lower cost), continuous aggregates for temporal summarization
 
 **Decision:**
-Option 3. Two layers with a hard boundary:
-- **`usme-core`**: pure TypeScript npm package, zero OpenClaw imports. Owns storage, selection policy, memory critic, consolidation, skill distillation. Public interface: `ingest()`, `assemble()`, `consolidate()`, `distillSkills()`. Lives at `rufus-projects/usme/`.
-- **OpenClaw adapter**: thin wrapper (~100 lines) inside rufus-plugin. Implements OpenClaw's Context Engine contract, maps turn format → MemoryItem, registers via `plugins.slots.contextEngine`.
+Option 3 (B+C combined). Start with the full stack in v1 because:
+- We have written zero storage code — switching cost is zero
+- Hypertables are genuinely the right structure for episodic memory (time-range queries like "last 7 days of episodes" are first-class, not workarounds)
+- pgvectorscale DiskANN is an extension on top of pgvector — minimal additional ops, significant performance benefit
+- pgvectorscale + TimescaleDB are both from the same maintainer (Timescale/TigerData) — they're designed to coexist
+- `time_bucket` + continuous aggregates make the nightly episode compression job elegant rather than painful
+- Local Docker compose handles the entire stack: one service, one port
 
-Future adapters (LangChain, CrewAI, etc.) implement their own interface on top of `usme-core`.
-
-**The rule:** nothing in `usme-core` imports from openclaw. The adapter knows both; the core knows neither.
+**Stack:**
+- Postgres 16
+- TimescaleDB extension (hypertables for episodic memory, continuous aggregates)
+- pgvector extension (HNSW indexes for semantic search)
+- pgvectorscale extension (DiskANN for scale; optional, can add later)
+- `node-postgres` (`pg`) driver — mature, connection-pooled, non-blocking
 
 **Consequences:**
-- Core and adapter can be built in parallel once the interface is locked
-- `usme-core` is publishable to npm independently if/when that's useful
-- Interface contract must be defined and locked before adapter work begins
+- Docker compose required for dev (trivial; add to repo)
+- Hot path adds ~1-5ms for Postgres round trip vs 0ms SQLite in-process — well within 150ms budget
+- Schema must be designed for TimescaleDB hypertables from day one (episodic table needs `created_at` as partitioning column)
+- Migration tooling: `node-pg-migrate` for schema versioning
+- Design must be migration-friendly; don't bake extension assumptions into the ORM
 
 ---
 
-## ADR-008: Storage — sqlite-vec + node:sqlite built-in (Node v25)
+## ADR-010: Deployment — standalone plugin + dedicated git repo
 
-**Date:** 2026-04-01
-**Status:** accepted
-**Decided by:** Rufus (research) — confirmed by Q5/Q6 constraints
-
-**Context:**
-ADR-003 selected SQLite + vector extension. Need to pick the specific extension and binding.
-
-**Options considered:**
-1. `better-sqlite3` + `sqlite-vec` — synchronous, fast, but native build issues on this box (documented in TOOLS.md)
-2. `node:sqlite` (built-in Node v25) + `sqlite-vec` — synchronous, built-in, no native compilation, `loadExtension()` supported
-3. LanceDB (`@lancedb/lancedb`) — embedded, Rust-based native binary per platform, async API, larger scope
-
-**Decision:**
-`node:sqlite` (built-in) + `sqlite-vec` npm package.
-- Node v25.8.1 (our runtime) ships `node:sqlite` with `loadExtension()` support
-- `sqlite-vec` is pure C — loads cleanly, no compilation step, no platform issues
-- Synchronous in-process path = lowest possible hot path latency (no async overhead, no IPC)
-- LanceDB rejected: Rust native binary has platform load risks (documented Windows issue), async API adds latency, billion-scale features are overkill for single-user
-
-**Consequences:**
-- Zero new native dependencies — no node-gyp, no better-sqlite3
-- Must validate `node:sqlite` + `sqlite-vec` integration in a prototype before starting schema design
-- HNSW index via sqlite-vec for ANN search; flat scan acceptable for small corpora (<10K memories)
-
----
-
-## ADR-007: Transition — shadow mode first, hard cutover after validation
-
-**Date:** 2026-04-01
+**Date:** 2026-04-04
 **Status:** accepted
 **Decided by:** Alex
 
 **Context:**
-LCM (lossless-claw) is working in production today. USME replaces it. Need a safe cutover strategy.
-
-**Options considered:**
-1. Hard cutover — disable LCM, enable USME, monitor
-2. Shadow mode — USME runs in parallel, logs what it *would have* sent, compare vs LCM before enabling
-3. Gradual — USME for new sessions, LCM for existing
+ADR-006 put `usme-core` as a pure TS library with a thin OpenClaw adapter inside rufus-plugin. Alex now wants USME to be its own plugin with its own git repo — still a "rufus project" (Rufus orchestrates, Rufus owns), but deployed and versioned independently.
 
 **Decision:**
-Shadow mode first (Option 2). USME runs alongside LCM, assembles context each turn but does not send it to the model — logs output to JSONL for comparison. Hard cutover only after shadow evaluation confirms USME quality ≥ LCM.
+- New git repo: `usme-claw` (or `usme` — naming TBD)
+- Ships as a standalone OpenClaw plugin that claims `plugins.slots.contextEngine`
+- No dependency on rufus-plugin internals
+- The ports-and-adapters split (ADR-006) still holds: `usme-core` is the pure library, the OpenClaw adapter is in the same repo but in a separate package folder
+- Repo lives at `~/ai/projects/rufus-projects/usme-claw/` (current `usme/` becomes the monorepo root)
+- Future: publishable to ClawHub as a standalone skill/plugin
 
 **Consequences:**
-- Must build a shadow mode flag into the OpenClaw adapter from day one
-- Evaluation log format needed: per-turn JSONL with {turn_id, lcm_tokens, usme_tokens, usme_top_items, timestamp}
-- Shadow mode is also the natural A/B harness for measuring token savings (Q2 success metric)
+- Separate versioning from rufus-plugin — can ship USME updates independently
+- Rufus orchestrates builds, reviews, and releases from his workspace as usual
+- CI/CD config goes in the new repo
+- rufus-plugin can still *call* usme-core as an npm dependency if it needs memory access (e.g., for the dashboard)
 
 ---
 
-## ADR-001: Integration point is the contextEngine slot — USME replaces lossless-claw
+## ADR-011: Per-turn memory extraction — async Haiku/Flash assessor
 
-**Date:** 2026-03-30
+**Date:** 2026-04-04
 **Status:** accepted
-**Decided by:** Alex + Rufus (transcript 2026-03-30)
+**Decided by:** Alex
 
 **Context:**
-USME needs a place to hook into OpenClaw's run loop. Two options: (1) use the `before_prompt_build` hook (what the distiller used), or (2) claim the `plugins.slots.contextEngine` slot.
-
-**Options considered:**
-1. `before_prompt_build` hook — additive, non-destructive, doesn't replace LCM
-2. `plugins.slots.contextEngine` — direct replacement of lossless-claw's context engine
+Each turn produces raw content that needs to be assessed for memory worthiness. Doing this synchronously in the hot path adds latency; doing it manually would never scale; not doing it means we rely on the nightly job alone (too slow for fast-moving sessions).
 
 **Decision:**
-Option 2. USME plugs into `plugins.slots.contextEngine` as a replacement for lossless-claw. The spec explicitly designs for this integration point and it's the only path to actually controlling what goes into the context window (the hook cannot replace messages).
+After each turn completes and the model response is delivered, fire an async Haiku/Flash extraction job:
+- Non-blocking — user sees no delay
+- Input: completed turn (user message + tool calls + model response)
+- Output: structured JSON with extracted memory items: `{type, content, provenance, utility_estimate, tags[]}`
+- Types: `fact | preference | decision | question | plan | anomaly | ephemeral`
+- Utility estimate: `high | medium | low | discard`
+- Items tagged `discard` are not written; others go to sensory trace table
+- Run async via a task queue (simple in-process queue for v1; separate worker queue for v2)
+
+**Model choice:** Haiku (Anthropic) or Flash (Google) — cheapest frontier models capable of structured extraction. ~$0.0003/turn. Configuration-driven so it can be swapped.
 
 **Consequences:**
-- This is a replacement, not an addition. lossless-claw will be disabled when USME is active.
-- USME must implement the full Context Engine contract: `ingest()`, `assemble()`, `compact()`
-- Migration strategy needed: can we run USME in shadow mode first? (see OPEN_QUESTIONS.md Q4)
+- Sensory trace table fills from two sources: (1) verbatim turn record, (2) Haiku/Flash extracted items
+- Extraction prompt is a first-class artifact — must be versioned, tested, iterable
+- If extraction fails, sensory trace still has verbatim record — graceful degradation
+
+---
+
+## ADR-012: Nightly consolidation — Sonnet for compression, Sonnet/Opus for skill drafting
+
+**Date:** 2026-04-04
+**Status:** accepted
+**Decided by:** Alex
+
+**Context:**
+The overnight job moves memory up the stack: sensory → episodic → semantic → procedural (skills). This is quality-critical, not latency-critical. A stronger model should do it.
+
+**Decision:**
+Nightly cron (using OpenClaw cron infrastructure — already operational):
+
+**Step 1 — Episode compression (Sonnet):**
+- Cluster today's sensory traces using embedding k-means (native SQL via pgvector's cosine distance clustering)
+- Sonnet reads each cluster + writes a compressed episode summary (200-500 tokens)
+- Summaries written to episodic hypertable with TimescaleDB `time_bucket` alignment
+
+**Step 2 — Fact promotion (Sonnet):**
+- Identify recurring patterns across episodes (same fact appears in 3+ episodes → candidate for semantic layer)
+- Sonnet adjudicates contradictions between new candidate facts and existing concept layer items
+- Winner replaces or supersedes loser with `supersedes_ref` link
+
+**Step 3 — Skill candidate identification (formula + Sonnet):**
+- Score all episodes: novelty × frequency × user-engagement-signals × teachability-estimate
+- Top N candidates → Sonnet: "Is this a generalizable, teachable workflow? If yes, rate teachability 1-10."
+- Candidates scoring ≥7 proceed to drafting
+
+**Step 4 — Skill drafting (Sonnet or Opus):**
+- Sonnet/Opus writes a draft SKILL.md from the interaction history
+- Validates against AgentSkills SKILL.md spec
+- Staged to `~/.openclaw/skills/candidates/` for user review
+- User notified; promotes on confirmation
+
+**Step 5 — Decay + prune:**
+- Decay utility scores on sensory traces older than 7 days
+- Hard-delete sensory traces older than 30 days (or configurable TTL)
+- Alert if memory DB total size exceeds threshold
+
+**Consequences:**
+- Nightly job is the primary driver of long-term memory quality — must be observable (log all decisions)
+- Job duration scales with activity; estimate 2-10 minutes for active daily use
+- Must be idempotent — safe to re-run if interrupted
+- Sonnet vs Opus for skill drafting: configurable; default Sonnet, Opus available for higher quality
+
+---
+
+## ADR-006 (revised): Ports and adapters — usme-core library + openclaw adapter (same repo)
+
+**Date revised:** 2026-04-04
+**Original:** 2026-04-01
+**Status:** revised (superseded partially by ADR-010)
+
+**Revision:** Both `usme-core` and the OpenClaw adapter now live in the same standalone repo (`usme-claw`), not inside rufus-plugin. The ports-and-adapters separation still holds — core has no OpenClaw imports. But the adapter is now a peer package in the same monorepo, not a guest in rufus-plugin.
+
+---
+
+## ADR-007: Transition — shadow mode is a hard v1 requirement (revised)
+
+**Date:** 2026-04-04 (revised from 2026-04-01)
+**Status:** accepted — strengthened
+
+**Original:** shadow mode before hard cutover.
+
+**Revision:** Shadow mode is not a nice-to-have transition step — it is a **hard v1 requirement**. USME ships in shadow mode and stays there until promotion criteria are met. There is no path to active mode without evidence from shadow evaluation.
+
+**What shadow mode does:** USME runs its full pipeline (ingest, assemble, afterTurn, nightly consolidation) on every turn. The model receives LCM's context. USME's assembly is computed, logged to `shadow_comparisons`, and compared against LCM's output. The memory store is populated during shadow mode so it is ready when we switch to active.
+
+**Tooling is part of v1 (not optional):**
+- `usme shadow report` — per-session and global metrics
+- `usme shadow tail` — live comparison feed
+- `usme shadow analyze` — run relevance analysis pass
+- `usme shadow ready` — promotion readiness check with explicit criteria
+
+**Promotion criteria (minimum, all must pass):**
+- ≥ 500 real shadow turns collected
+- P95 assembly latency ≤ 150ms under real load
+- Extraction success rate ≥ 95%
+- ≥ 60% of extracted items rated medium/high utility
+- ≥ 50% of USME-injected memories cited in model responses (relevance proxy)
+- Zero unhandled exceptions in hot path
+
+**Compaction clarification:** USME does not compact in the traditional sense. It assembles within a fixed token budget on every turn — no accumulation problem exists. `compact()` is implemented per the interface contract but redefines the action as on-demand episode compression. `ownsCompaction: true` is set to prevent OpenClaw from triggering legacy auto-compaction events.
 
 ---
 
@@ -113,50 +185,7 @@ Option 2. USME plugs into `plugins.slots.contextEngine` as a replacement for los
 
 **Date:** 2026-03-30
 **Status:** accepted
-**Decided by:** Alex (transcript 2026-03-30)
-
-**Context:**
-The spec frames the memory critic (FR-05) primarily as a security tool — preventing memory injection attacks from untrusted users. Alex reframed it as a quality tool.
-
-**Options considered:**
-1. Security-first framing: block injections, flag suspicious items (relevant for multi-tenant SaaS)
-2. Editorial-first framing: evaluate relevance, recency, and provenance to curate what enters context
-
-**Decision:**
-Editorial-first (Option 2) for v1. We are single-user, self-hosted — injection attacks are not the threat model. The critic's job is to ask "should this actually be here right now?" based on:
-- Is it still true? (recency/decay)
-- Is it relevant to the current query? (semantic match)
-- Is it signal or noise? (promote resolution facts, bury debugging traces)
-- How confident is this? (provenance tier: explicit statement > tool result > inference)
-- Has it been superseded? (contradiction detection)
-
-**Consequences:**
-- Simpler threat model for v1; security layer can be added later for multi-user scenarios
-- Critic must implement contradiction detection (memory A supersedes memory B)
-- Provenance tiers must be defined and enforced at ingest time
-
----
-
-## ADR-003: V1 storage — SQLite + vector extension (not Postgres + pgvector)
-
-**Date:** 2026-03-30
-**Status:** accepted
-**Decided by:** Rufus recommendation, Alex agreed (implicit)
-
-**Context:**
-The spec recommends Postgres + pgvector as the default storage. We currently run zero databases on the server.
-
-**Options considered:**
-1. Postgres + pgvector — production-grade, strong transactional semantics, more ops complexity
-2. SQLite + sqlite-vec (or similar) — zero new service dependencies, simpler ops, sufficient for single-user
-
-**Decision:**
-SQLite + vector extension for v1. Single-user workload does not justify Postgres ops complexity. SQLite has proven sufficient (lossless-claw uses it today). Migrate to Postgres if/when we hit limits.
-
-**Consequences:**
-- Must select a SQLite vector extension: candidates are `sqlite-vec`, `sqlite-vss`, `vectorlite`
-- HNSW vs IVFFlat index choice deferred until extension is selected
-- Schema must be migration-friendly for future Postgres move
+*(Unchanged.)*
 
 ---
 
@@ -164,54 +193,20 @@ SQLite + vector extension for v1. Single-user workload does not justify Postgres
 
 **Date:** 2026-03-30
 **Status:** accepted
-**Decided by:** Rufus recommendation, Alex agreed (implicit)
-
-**Context:**
-FR-03 specifies a "learned retrieval + selection policy" using contextual bandits / RL-style credit assignment. Building a full bandit requires labeled training data we don't have.
-
-**Options considered:**
-1. Full RL bandit (FR-07 machinery) — best eventual quality, requires feedback loops and training data
-2. Weighted formula — deterministic, tunable, ships immediately, no training data needed
-
-**Decision:**
-Weighted formula for v1 with four factors:
-1. Semantic relevance to current query (vector similarity score)
-2. Recency / decay (exponential decay from `last_confirmed_at`)
-3. Provenance tier (explicit user statement = 1.0 > tool result = 0.7 > model inference = 0.4)
-4. Access frequency (retrieval rate as a proxy for utility)
-
-Items below an inclusion threshold are excluded. Items above are ranked and packed until token budget is exhausted.
-
-V2 adds online learning (FR-07): reward signals when model performs well → update formula weights.
-
-**Consequences:**
-- Must define and tune the formula weights empirically
-- Need a way to emit "this memory was useful / not useful" signals for future v2 learning
-- Formula is transparent and auditable — useful for debugging retrieval quality
+*(Unchanged.)*
 
 ---
 
-## ADR-005: Build slim v1 — FR-03 + FR-04 + FR-08 first, not the full spec
+## ADR-005: Build slim v1 — FR-03 + FR-04 + FR-08 first
 
 **Date:** 2026-03-30
 **Status:** accepted
-**Decided by:** Rufus recommendation, Alex agreed (implicit)
+*(Unchanged. Now also includes ADR-011 async extractor as part of the v1 core.)*
 
-**Context:**
-The full spec (FR-01 to FR-09) is a 4-6 week build before any of the interesting capabilities ship. Must prioritize.
+---
 
-**Options considered:**
-1. Build full spec end-to-end before shipping anything
-2. Identify the 2-3 FRs with highest leverage and ship those first
+## ADR-001: Integration point is the contextEngine slot
 
-**Decision:**
-Build slim v1 targeting:
-- **FR-03 + FR-04** (selection policy + multi-mode packaging) — core value proposition; makes every conversation noticeably better
-- **FR-08** (overnight skill distillation) — most novel capability; most aligned with "organizational memory that compounds" pitch
-
-Full FR list remains the roadmap; everything else follows once v1 is validated.
-
-**Consequences:**
-- FR-07 (online learning) is explicitly deferred — need v1 shipped first to collect data
-- FR-05 (memory critic) is included in v1 but scoped to editorial scoring, not full security apparatus
-- FR-06 (consolidation/sleep) is required for v1 to prevent unbounded memory growth
+**Date:** 2026-03-30
+**Status:** accepted
+*(Unchanged.)*

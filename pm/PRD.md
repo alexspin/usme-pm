@@ -34,12 +34,13 @@ That is a harder question — and a significantly more valuable one.
 
 ## Non-Goals (v1)
 
-- Full Postgres + pgvector stack (use SQLite + vector extension in v1)
 - Multi-tenant / multi-user memory isolation (single-user scope for v1)
 - Online RL / bandit-based policy learning (formula-based scoring in v1; ML is v2)
 - HIPAA/SOC2/compliance instrumentation
 - Governance / permissions layer (SpiceDB, OPA)
 - ClawHub skill publishing pipeline
+- Graph DB (Neo4j/Memgraph) for concept entity linking — JSONB links in Postgres sufficient for v1
+- pgvectorscale DiskANN index — standard pgvector HNSW in v1, pgvectorscale in v2 if needed
 
 ---
 
@@ -79,9 +80,10 @@ That is a harder question — and a significantly more valuable one.
 ## Constraints
 
 - **Tech:** must integrate via `plugins.slots.contextEngine` — lossless-claw is the incumbent to replace
-- **Latency:** hot path must be non-blocking; async work happens in the background
-- **Ops:** zero new service dependencies in v1 — SQLite only, no Postgres
+- **Latency:** hot path must be non-blocking; async work happens in the background; P95 assembly ≤150ms
+- **Ops:** local Postgres only — no remote services, no cloud databases; Docker compose for dev
 - **Compatibility:** graceful degradation — always fall back to full LCM context if USME fails
+- **Deployment:** standalone plugin in its own git repo (not part of rufus-plugin)
 
 ---
 
@@ -102,13 +104,27 @@ consolidate → dedupe → promote facts → decay stale → distill skills → 
 Integration point: `plugins.slots.contextEngine` — replaces lossless-claw.
 See DECISIONS.md ADR-001 for rationale.
 
+### Storage Stack
+- **Postgres 16** (local Docker) — unified store for all memory tiers
+- **TimescaleDB** — hypertables for episodic memory (time-partitioned, `time_bucket` aggregation)
+- **pgvector** — HNSW vector indexes for semantic similarity search
+- **`node-postgres`** — connection-pooled driver, non-blocking
+
 ### Memory Store Layers
-| Layer | What it holds | Timescale |
-|---|---|---|
-| Sensory trace | Raw turn content (tool calls, messages) | Hours → days |
-| Episodic store | Compressed episode summaries | Days → weeks |
-| Concept layer | Stable facts, preferences, decisions | Indefinite |
-| Working-set constructor | Per-turn assembly from above layers | Per turn |
+| Layer | What it holds | Timescale | Postgres Implementation |
+|---|---|---|---|
+| Sensory trace | Raw turn content + Haiku/Flash extracted items | Hours → 30 days | Standard table with TTL |
+| Episodic store | Compressed episode summaries (Sonnet) | Days → weeks | TimescaleDB hypertable |
+| Concept layer | Stable facts, preferences, decisions | Indefinite | pgvector table (HNSW indexed) |
+| Skill registry | Procedural workflows, SKILL.md index | Indefinite | Standard table + disk |
+| Working-set constructor | Per-turn assembly from above layers | Per turn | In-memory assembly only |
+
+### Model Roles
+| Model | Role | When | Latency |
+|---|---|---|---|
+| Haiku / Flash | Per-turn memory extraction | Async, after each turn | ~1-3s, non-blocking |
+| Sonnet | Episode compression, fact promotion, contradiction resolution | Nightly | 2-10 min job |
+| Sonnet / Opus | Skill candidate drafting | Nightly (top candidates only) | Part of nightly job |
 
 ### Memory Item (key fields)
 - `type`: sensory_trace | episode | fact | preference | plan | skill_candidate | tool_result
@@ -130,3 +146,4 @@ See OPEN_QUESTIONS.md for the live list.
 | Date | Author | Change |
 |---|---|---|
 | 2026-04-01 | Rufus | Initial draft from spec PDF + transcript analysis |
+| 2026-04-04 | Rufus | Storage upgraded to Postgres + TimescaleDB + pgvector (supersedes SQLite ADRs). Plugin moved to standalone git repo. Async Haiku/Flash extractor added. Nightly Sonnet/Opus skill accrual formalized. |

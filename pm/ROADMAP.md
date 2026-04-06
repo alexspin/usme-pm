@@ -13,7 +13,7 @@ Answer the 6 open questions and lock the design before writing code.
 - [ ] Q1–Q6: Answer all open discovery questions (see OPEN_QUESTIONS.md)
 - [ ] PRD approved — move to DESIGN
 - [ ] Write architecture.md: data model, storage schema, hot path flow, async path flow
-- [ ] Select SQLite vector extension (leading candidate: sqlite-vec)
+- [x] Storage decision locked: Postgres + TimescaleDB + pgvector (ADR-009)
 - [ ] Decide: shadow mode rollout vs hard cutover
 
 ---
@@ -23,8 +23,9 @@ Answer the 6 open questions and lock the design before writing code.
 The minimum useful USME: a context engine that selects by relevance, not just recency.
 
 - [ ] **M1.1: Storage layer**
-  - [ ] SQLite + sqlite-vec schema (MemoryItem, MemoryLink tables)
-  - [ ] Ingest pipeline: turn content → sensory trace + episode
+  - [ ] Postgres + TimescaleDB + pgvector Docker compose setup
+  - [ ] Schema: sensory_trace (standard), episodes (hypertable), concepts (pgvector HNSW), skills (standard)
+  - [ ] node-pg-migrate setup for schema versioning
   - [ ] Basic CRUD + vector index maintenance
 
 - [ ] **M1.2: Selection policy v1 (FR-03)**
@@ -37,46 +38,43 @@ The minimum useful USME: a context engine that selects by relevance, not just re
   - [ ] `extended` mode: broader recall, relaxed budget
   - [ ] Mode selectable via runtime hint from agent/tooling
 
-- [ ] **M1.4: Memory critic v1 (FR-05 — editorial)**
+- [ ] **M1.4: Async Haiku/Flash extractor (ADR-011)**
+  - [ ] Per-turn extraction: fires async after response delivered
+  - [ ] Structured output: {type, content, provenance, utility_estimate, tags[]}
+  - [ ] In-process task queue; graceful degradation if extractor fails
+
+- [ ] **M1.5: Memory critic v1 (FR-05 — editorial)**
   - [ ] Recency/decay scoring
   - [ ] Supersession detection (new fact overrides old fact)
   - [ ] Provenance tiering at ingest
 
-- [ ] **M1.5: OpenClaw plugin packaging (FR-09)**
+- [ ] **M1.6: OpenClaw plugin packaging (FR-09)**
   - [ ] Implements Context Engine contract: ingest(), assemble(), compact()
   - [ ] Registered via plugins.slots.contextEngine
   - [ ] Shadow mode flag: logs what USME would send vs what LCM sends
 
-- [ ] **M1.6: Nightly consolidation (FR-06)**
-  - [ ] Summarize sensory traces → episodes
-  - [ ] Dedupe near-duplicate memories
-  - [ ] Decay utility scores on stale items
-  - [ ] Bounded growth check: alert if memory DB exceeds threshold
+- [ ] **M1.7: Nightly consolidation + skill accrual (FR-06 + FR-08, ADR-012)**
+  - [ ] Cluster sensory traces → episodes (pgvector cosine k-means + Sonnet compression)
+  - [ ] Fact promotion: recurring episode patterns → concept layer (Sonnet adjudicates)
+  - [ ] Contradiction resolution: semantic search for conflicts, Sonnet adjudicates
+  - [ ] Skill candidate ranking: novelty × frequency × teachability formula
+  - [ ] Skill drafting: Sonnet/Opus writes SKILL.md candidates for top-ranked interactions
+  - [ ] Decay + prune: sensory traces TTL 30d; decay utility scores on stale concept items
+  - [ ] Bounded growth check + alert if DB exceeds threshold
 
 ---
 
-## Phase 2: Skill Distillation — v1 (Build — 2026-06)
+## Phase 2: Scale + Graph — v2 (2026-Q3)
 
-The most novel capability. Turns daily usage into reusable SKILL.md bundles.
+Upgrade performance and add richer relationship traversal.
 
-- [ ] **M2.1: Activity ranker**
-  - [ ] Overnight job: scan previous day's episodes
-  - [ ] Score by: novelty, frequency, recency, user engagement signals
-  - [ ] Emit ranked list of candidate skill topics
-
-- [ ] **M2.2: Skill evaluator**
-  - [ ] Send top candidates to stronger model (Sonnet or better)
-  - [ ] Prompt: "Is this a generalizable skill? Write a SKILL.md if yes."
-  - [ ] Validate output against AgentSkills SKILL.md spec
-
-- [ ] **M2.3: Skill staging**
-  - [ ] Write candidate SKILL.md to `~/.openclaw/skills/candidates/`
-  - [ ] Notify user: "New skill candidate: X — review and promote to active?"
-  - [ ] Promote on user confirmation to workspace skills folder
+- [ ] **M2.1: pgvectorscale DiskANN indexes** — upgrade from HNSW for large collections
+- [ ] **M2.2: Graph entity linking** — evaluate Neo4j or Memgraph for concept entity relationships (vs JSONB links)
+- [ ] **M2.3: TimescaleDB continuous aggregates** — automated temporal roll-ups for episodic memory
 
 ---
 
-## Phase 3: Learning Hooks — v2 (2026-Q3)
+## Phase 3: Learning Hooks — v3 (2026-Q4)
 
 Add online learning on top of the v1 formula. Requires v1 to be running and collecting data.
 
@@ -88,11 +86,8 @@ Add online learning on top of the v1 formula. Requires v1 to be running and coll
 
 ---
 
-## Phase 4: Scale — v2+ (TBD)
+## Phase 4: Multi-User + Publishing — v3+ (TBD)
 
-Only if/when single-user SQLite limits are hit.
-
-- [ ] Migrate to Postgres + pgvector (ADR-003 revisit)
 - [ ] Multi-user memory isolation (permissions layer)
 - [ ] Adam's agent integration — shared concept layer, separate episodic stores
 - [ ] ClawHub skill publishing pipeline

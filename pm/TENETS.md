@@ -20,10 +20,11 @@ Build a tunable, transparent scoring formula before building a learning system.
 The memory critic is a curating editor, not a security guard (in single-user context).
 *Protect quality by asking "is this still true and relevant?" — not by assuming bad intent.*
 
-## Tenet 4: Zero new services in v1
+## Tenet 4: Local services only — no remote dependencies
 
-No Postgres, no external vector DB, no new processes. SQLite only.
-*Ops complexity is a real cost. Earn the complexity before you pay for it.*
+No cloud databases, no remote vector stores, no external API dependencies in the storage layer.
+Local Postgres (Docker) is acceptable and appropriate. Remote services require explicit justification.
+*Ops complexity is a real cost — but the right local stack pays for itself immediately.*
 
 ## Tenet 5: Skill distillation is the pitch
 
