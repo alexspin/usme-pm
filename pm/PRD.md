@@ -147,3 +147,45 @@ See OPEN_QUESTIONS.md for the live list.
 |---|---|---|
 | 2026-04-01 | Rufus | Initial draft from spec PDF + transcript analysis |
 | 2026-04-04 | Rufus | Storage upgraded to Postgres + TimescaleDB + pgvector (supersedes SQLite ADRs). Plugin moved to standalone git repo. Async Haiku/Flash extractor added. Nightly Sonnet/Opus skill accrual formalized. |
+
+---
+
+## What Actually Shipped (v1 — 2026-04-09)
+
+*This section supersedes the Scope and Architecture sections above, which reflect the original spec.*
+
+**Scope changes from original:**
+
+| Original spec | What shipped |
+|---|---|
+| SQLite + sqlite-vec | PostgreSQL 16 + TimescaleDB + pgvector (HNSW) |
+| LCM slot contextEngine replacement | OpenClaw plugin (active mode injection, not slot replacement) |
+| Shadow mode first, then cutover | Shadow mode built and validated, cutover to active 2026-04-06 |
+| Skill drafting via Opus | Skill drafting via Sonnet (Opus deferred) |
+| Online RL / bandit learning (v2) | Still v2 |
+
+**Features beyond original scope (added during build):**
+
+- `importance_score` (1–10) on episodes, Haiku-assigned at creation — gating signal for skill drafting
+- Memory Reflection Service — holistic LLM review of full corpus 2× daily, produces concept merges, contradiction resolution, entity relationship updates, skill candidates
+- Spreading activation — entity graph walk (up to N hops) after ANN retrieval
+- `exclude_from_reflection` privacy flags on all 4 tiers
+- `skill_candidates` table + daily delivery cron (17:00 UTC)
+- Dashboard — 6-panel live view at https://collective7.spinelli5.com/usme/
+- `openclaw usme reflect` CLI
+
+**Deployed state as of 2026-04-09:**
+
+- Active mode since 2026-04-06 20:58 UTC — 43–60 items/turn, ~54ms P50 latency
+- Migrations 001–013 applied
+- 5 candidate skills created via reflection service (nightly path blocked pending importance_score backfill)
+- 2 reflection runs complete (runId 1 and 2)
+
+**Success metric status:**
+
+| Metric | Target | Actual |
+|---|---|---|
+| Skill candidate pass rate | ≥50% worth promoting | 5 candidates created; human review pending |
+| Skills promoted/week | ≥1/week steady-state | 0 active yet (awaiting promotion) |
+| Hot path latency P95 | ≤150ms | ~54ms P50 (embedding dominates) |
+| Context tokens/turn | Measurable reduction vs LCM | 43–60 items/~3K tokens injected |

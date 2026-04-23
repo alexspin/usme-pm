@@ -1,5 +1,8 @@
 # Tenets: USME
 
+> **Canonical copy:** `/home/alex/ai/projects/rufus-projects/usme-claw/pm/TENETS.md`
+
+
 Principles that guide decisions when data isn't available.
 These are not goals — they are how we think. Change them only by stepping back and revisiting explicitly.
 
